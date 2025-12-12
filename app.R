@@ -28,9 +28,7 @@ pick_dataset <- function(type = c("all", "made", "missed")) {
 ## 1. Helpers
 ## ---------------------------------------------------------------
 
-# Build a robust free-throw flag from whatever column exists
 infer_free_throw_flag <- function(df) {
-  # Default: NA (unknown)
   ft <- rep(NA, nrow(df))
   
   if ("free_throw" %in% names(df)) {
@@ -47,20 +45,16 @@ infer_free_throw_flag <- function(df) {
     ft <- grepl("free throw|freethrow", df$description, ignore.case = TRUE)
   }
   
-  # Normalize to logical where possible
   if (is.character(ft)) ft <- toupper(ft) == "TRUE"
-  if (is.numeric(ft)) ft <- ft == 1
-  
+  if (is.numeric(ft))   ft <- ft == 1
   as.logical(ft)
 }
 
-# Normalize a "three_pt" flag to logical if present
 infer_three_pt_flag <- function(df) {
   if (!("three_pt" %in% names(df))) return(rep(NA, nrow(df)))
-  
   tp <- df$three_pt
   if (is.character(tp)) tp <- toupper(tp) == "TRUE"
-  if (is.numeric(tp)) tp <- tp == 1
+  if (is.numeric(tp))   tp <- tp == 1
   as.logical(tp)
 }
 
@@ -74,10 +68,10 @@ make_shot_summary <- function(data,
   season_on <- season != "All seasons"
   player_on <- player != "All players"
   
-  # NEW K RULE: if player selected => K=5 regardless of season
+  # K rule: if player selected => K=5 regardless of season
   K <- if (player_on) 5 else if (season_on) 20 else 35
   
-  # Season-relative prior (actually: relative to the CURRENT FILTERED SUBSET)
+  # Season-relative prior: relative to CURRENT FILTERED SUBSET
   mu <- mean(data$shot_outcome == "made")
   alpha <- mu * K
   beta  <- (1 - mu) * K
@@ -116,6 +110,36 @@ plot_shot_map <- function(summary_df, title) {
 }
 
 ## ---------------------------------------------------------------
+## NEW: Choice helper that respects ERA + optional season + optional team
+## ---------------------------------------------------------------
+
+get_choices <- function(era = c("pre","post"),
+                        season_choice = "All seasons",
+                        team_choice = "All teams") {
+  era <- match.arg(era)
+  
+  # First restrict to the ERA seasons when "All seasons" is selected
+  era_seasons <- if (era == "pre") pre_seasons else post_seasons
+  
+  df <- shots_all %>% filter(.data$season %in% era_seasons)
+  
+  # Optional: season restriction
+  if (!is.null(season_choice) && season_choice != "All seasons") {
+    df <- df %>% filter(.data$season == season_choice)
+  }
+  
+  # Optional: team restriction (for player dropdown)
+  if (!is.null(team_choice) && team_choice != "All teams") {
+    df <- df %>% filter(.data$shot_team == team_choice)
+  }
+  
+  list(
+    teams   = sort(unique(df$shot_team)),
+    players = sort(unique(df$shooter))
+  )
+}
+
+## ---------------------------------------------------------------
 ## 2. UI
 ## ---------------------------------------------------------------
 
@@ -129,21 +153,21 @@ ui <- fluidPage(
       sidebarLayout(
         sidebarPanel(
           selectInput("season_pre", "Season:",
-                      choices = c("All seasons", pre_seasons)),
+                      choices = c("All seasons", pre_seasons),
+                      selected = "All seasons"),
           selectInput("team_pre", "Team:",
-                      choices = c("All teams", all_teams)),
+                      choices = c("All teams", all_teams),
+                      selected = "All teams"),
           selectizeInput("player_pre", "Player:",
                          choices = c("All players", all_players),
                          selected = "All players"),
           
-          # NEW: Free throw filter
           selectInput("ft_pre", "Free throws:",
                       choices = c("All shots" = "all",
                                   "Free throws only" = "ft_only",
                                   "No free throws" = "no_ft"),
                       selected = "all"),
           
-          # NEW: 3PT filter
           selectInput("tp_pre", "3-point shots:",
                       choices = c("All shots" = "all",
                                   "3-point only" = "tp_only",
@@ -153,11 +177,13 @@ ui <- fluidPage(
           radioButtons("shot_result_pre", "Makes / Misses:",
                        choices = c("All shots" = "all",
                                    "Makes only" = "made",
-                                   "Misses only" = "missed")),
+                                   "Misses only" = "missed"),
+                       selected = "all"),
           radioButtons("plot_type_pre", "Plot type:",
                        choices = c("Points" = "points",
                                    "Density heatmap" = "heatmap",
-                                   "Efficiency (Shrunk FG%)" = "eff"))
+                                   "Efficiency (Shrunk FG%)" = "eff"),
+                       selected = "points")
         ),
         mainPanel(
           plotOutput("plot_pre", height = "550px"),
@@ -176,21 +202,21 @@ ui <- fluidPage(
       sidebarLayout(
         sidebarPanel(
           selectInput("season_post", "Season:",
-                      choices = c("All seasons", post_seasons)),
+                      choices = c("All seasons", post_seasons),
+                      selected = "All seasons"),
           selectInput("team_post", "Team:",
-                      choices = c("All teams", all_teams)),
+                      choices = c("All teams", all_teams),
+                      selected = "All teams"),
           selectizeInput("player_post", "Player:",
                          choices = c("All players", all_players),
                          selected = "All players"),
           
-          # NEW: Free throw filter
           selectInput("ft_post", "Free throws:",
                       choices = c("All shots" = "all",
                                   "Free throws only" = "ft_only",
                                   "No free throws" = "no_ft"),
                       selected = "all"),
           
-          # NEW: 3PT filter
           selectInput("tp_post", "3-point shots:",
                       choices = c("All shots" = "all",
                                   "3-point only" = "tp_only",
@@ -200,11 +226,13 @@ ui <- fluidPage(
           radioButtons("shot_result_post", "Makes / Misses:",
                        choices = c("All shots" = "all",
                                    "Makes only" = "made",
-                                   "Misses only" = "missed")),
+                                   "Misses only" = "missed"),
+                       selected = "all"),
           radioButtons("plot_type_post", "Plot type:",
                        choices = c("Points" = "points",
                                    "Density heatmap" = "heatmap",
-                                   "Efficiency (Shrunk FG%)" = "eff"))
+                                   "Efficiency (Shrunk FG%)" = "eff"),
+                       selected = "points")
         ),
         mainPanel(
           plotOutput("plot_post", height = "550px"),
@@ -226,6 +254,72 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   
+  ## -----------------------------------------------------------
+  ## Dynamic dropdown updates
+  ##  - season affects teams + players
+  ##  - team affects players
+  ## -----------------------------------------------------------
+  
+  observeEvent(input$season_pre, {
+    ch <- get_choices("pre", season_choice = input$season_pre, team_choice = "All teams")
+    
+    updateSelectInput(
+      session, "team_pre",
+      choices = c("All teams", ch$teams),
+      selected = "All teams"
+    )
+    
+    updateSelectizeInput(
+      session, "player_pre",
+      choices = c("All players", ch$players),
+      selected = "All players",
+      server = TRUE
+    )
+  }, ignoreInit = FALSE)
+  
+  observeEvent(input$team_pre, {
+    ch <- get_choices("pre", season_choice = input$season_pre, team_choice = input$team_pre)
+    
+    updateSelectizeInput(
+      session, "player_pre",
+      choices = c("All players", ch$players),
+      selected = if (input$player_pre %in% c("All players", ch$players)) input$player_pre else "All players",
+      server = TRUE
+    )
+  }, ignoreInit = TRUE)
+  
+  observeEvent(input$season_post, {
+    ch <- get_choices("post", season_choice = input$season_post, team_choice = "All teams")
+    
+    updateSelectInput(
+      session, "team_post",
+      choices = c("All teams", ch$teams),
+      selected = "All teams"
+    )
+    
+    updateSelectizeInput(
+      session, "player_post",
+      choices = c("All players", ch$players),
+      selected = "All players",
+      server = TRUE
+    )
+  }, ignoreInit = FALSE)
+  
+  observeEvent(input$team_post, {
+    ch <- get_choices("post", season_choice = input$season_post, team_choice = input$team_post)
+    
+    updateSelectizeInput(
+      session, "player_post",
+      choices = c("All players", ch$players),
+      selected = if (input$player_post %in% c("All players", ch$players)) input$player_post else "All players",
+      server = TRUE
+    )
+  }, ignoreInit = TRUE)
+  
+  ## -----------------------------------------------------------
+  ## Filtering logic (IMPORTANT: "All seasons" means all ERA seasons)
+  ## -----------------------------------------------------------
+  
   filter_data <- function(era) {
     
     if (era == "pre") {
@@ -235,6 +329,10 @@ server <- function(input, output, session) {
       ft_choice     <- input$ft_pre
       tp_choice     <- input$tp_pre
       base          <- pick_dataset(input$shot_result_pre)
+      
+      # "All seasons" = all pre seasons
+      era_seasons <- pre_seasons
+      
     } else {
       season_choice <- input$season_post
       team_choice   <- input$team_post
@@ -242,16 +340,24 @@ server <- function(input, output, session) {
       ft_choice     <- input$ft_post
       tp_choice     <- input$tp_post
       base          <- pick_dataset(input$shot_result_post)
+      
+      # "All seasons" = all post seasons
+      era_seasons <- post_seasons
     }
     
     df <- base
     
-    # Safe conditioning (no season==season bug)
+    # Always restrict to the current tab's era when season is "All seasons"
+    df <- df %>% filter(.data$season %in% era_seasons)
+    
+    # Optional season filter
     if (season_choice != "All seasons") df <- df %>% filter(.data$season == season_choice)
+    
+    # Team + player filters
     if (team_choice   != "All teams")   df <- df %>% filter(.data$shot_team == team_choice)
     if (player_choice != "All players") df <- df %>% filter(.data$shooter == player_choice)
     
-    # Apply 3PT filter (if three_pt exists)
+    # 3PT filter
     tp_flag <- infer_three_pt_flag(df)
     if (tp_choice == "tp_only") {
       df <- df %>% filter(tp_flag %in% TRUE)
@@ -259,7 +365,7 @@ server <- function(input, output, session) {
       df <- df %>% filter(tp_flag %in% FALSE)
     }
     
-    # Apply Free Throw filter (robust inference)
+    # Free throw filter
     ft_flag <- infer_free_throw_flag(df)
     if (ft_choice == "ft_only") {
       df <- df %>% filter(ft_flag %in% TRUE)
