@@ -28,6 +28,42 @@ pick_dataset <- function(type = c("all", "made", "missed")) {
 ## 1. Helpers
 ## ---------------------------------------------------------------
 
+# Build a robust free-throw flag from whatever column exists
+infer_free_throw_flag <- function(df) {
+  # Default: NA (unknown)
+  ft <- rep(NA, nrow(df))
+  
+  if ("free_throw" %in% names(df)) {
+    ft <- df$free_throw
+  } else if ("is_free_throw" %in% names(df)) {
+    ft <- df$is_free_throw
+  } else if ("ft" %in% names(df)) {
+    ft <- df$ft
+  } else if ("event_type" %in% names(df)) {
+    ft <- grepl("free", df$event_type, ignore.case = TRUE)
+  } else if ("shot_type" %in% names(df)) {
+    ft <- grepl("free", df$shot_type, ignore.case = TRUE)
+  } else if ("description" %in% names(df)) {
+    ft <- grepl("free throw|freethrow", df$description, ignore.case = TRUE)
+  }
+  
+  # Normalize to logical where possible
+  if (is.character(ft)) ft <- toupper(ft) == "TRUE"
+  if (is.numeric(ft)) ft <- ft == 1
+  
+  as.logical(ft)
+}
+
+# Normalize a "three_pt" flag to logical if present
+infer_three_pt_flag <- function(df) {
+  if (!("three_pt" %in% names(df))) return(rep(NA, nrow(df)))
+  
+  tp <- df$three_pt
+  if (is.character(tp)) tp <- toupper(tp) == "TRUE"
+  if (is.numeric(tp)) tp <- tp == 1
+  as.logical(tp)
+}
+
 make_shot_summary <- function(data,
                               season = "All seasons",
                               player = "All players",
@@ -38,17 +74,10 @@ make_shot_summary <- function(data,
   season_on <- season != "All seasons"
   player_on <- player != "All players"
   
-  K <- if (season_on && player_on) {
-    7
-  } else if (season_on) {
-    20
-  } else if (player_on) {
-    5
-  } else {
-    35
-  }
+  # NEW K RULE: if player selected => K=5 regardless of season
+  K <- if (player_on) 5 else if (season_on) 20 else 35
   
-  # SEASON-RELATIVE PRIOR
+  # Season-relative prior (actually: relative to the CURRENT FILTERED SUBSET)
   mu <- mean(data$shot_outcome == "made")
   alpha <- mu * K
   beta  <- (1 - mu) * K
@@ -106,6 +135,21 @@ ui <- fluidPage(
           selectizeInput("player_pre", "Player:",
                          choices = c("All players", all_players),
                          selected = "All players"),
+          
+          # NEW: Free throw filter
+          selectInput("ft_pre", "Free throws:",
+                      choices = c("All shots" = "all",
+                                  "Free throws only" = "ft_only",
+                                  "No free throws" = "no_ft"),
+                      selected = "all"),
+          
+          # NEW: 3PT filter
+          selectInput("tp_pre", "3-point shots:",
+                      choices = c("All shots" = "all",
+                                  "3-point only" = "tp_only",
+                                  "No 3-point (2PT only)" = "no_tp"),
+                      selected = "all"),
+          
           radioButtons("shot_result_pre", "Makes / Misses:",
                        choices = c("All shots" = "all",
                                    "Makes only" = "made",
@@ -138,6 +182,21 @@ ui <- fluidPage(
           selectizeInput("player_post", "Player:",
                          choices = c("All players", all_players),
                          selected = "All players"),
+          
+          # NEW: Free throw filter
+          selectInput("ft_post", "Free throws:",
+                      choices = c("All shots" = "all",
+                                  "Free throws only" = "ft_only",
+                                  "No free throws" = "no_ft"),
+                      selected = "all"),
+          
+          # NEW: 3PT filter
+          selectInput("tp_post", "3-point shots:",
+                      choices = c("All shots" = "all",
+                                  "3-point only" = "tp_only",
+                                  "No 3-point (2PT only)" = "no_tp"),
+                      selected = "all"),
+          
           radioButtons("shot_result_post", "Makes / Misses:",
                        choices = c("All shots" = "all",
                                    "Makes only" = "made",
@@ -173,24 +232,39 @@ server <- function(input, output, session) {
       season_choice <- input$season_pre
       team_choice   <- input$team_pre
       player_choice <- input$player_pre
+      ft_choice     <- input$ft_pre
+      tp_choice     <- input$tp_pre
       base          <- pick_dataset(input$shot_result_pre)
     } else {
       season_choice <- input$season_post
       team_choice   <- input$team_post
       player_choice <- input$player_post
+      ft_choice     <- input$ft_post
+      tp_choice     <- input$tp_post
       base          <- pick_dataset(input$shot_result_post)
     }
     
     df <- base
     
-    if (season_choice != "All seasons") {
-      df <- df %>% filter(.data$season == season_choice)
+    # Safe conditioning (no season==season bug)
+    if (season_choice != "All seasons") df <- df %>% filter(.data$season == season_choice)
+    if (team_choice   != "All teams")   df <- df %>% filter(.data$shot_team == team_choice)
+    if (player_choice != "All players") df <- df %>% filter(.data$shooter == player_choice)
+    
+    # Apply 3PT filter (if three_pt exists)
+    tp_flag <- infer_three_pt_flag(df)
+    if (tp_choice == "tp_only") {
+      df <- df %>% filter(tp_flag %in% TRUE)
+    } else if (tp_choice == "no_tp") {
+      df <- df %>% filter(tp_flag %in% FALSE)
     }
-    if (team_choice != "All teams") {
-      df <- df %>% filter(.data$shot_team == team_choice)
-    }
-    if (player_choice != "All players") {
-      df <- df %>% filter(.data$shooter == player_choice)
+    
+    # Apply Free Throw filter (robust inference)
+    ft_flag <- infer_free_throw_flag(df)
+    if (ft_choice == "ft_only") {
+      df <- df %>% filter(ft_flag %in% TRUE)
+    } else if (ft_choice == "no_ft") {
+      df <- df %>% filter(ft_flag %in% FALSE)
     }
     
     df
@@ -203,9 +277,8 @@ server <- function(input, output, session) {
     if (nrow(df) == 0) return(NULL)
     
     if (input$plot_type_pre == "eff") {
-      ss <- make_shot_summary(df,
-                              season = input$season_pre,
-                              player = input$player_pre)
+      ss <- make_shot_summary(df, season = input$season_pre, player = input$player_pre)
+      
       plot_shot_map(
         ss,
         paste0("Shrunk FG% (μ=", round(unique(ss$prior_mu), 3),
@@ -254,10 +327,9 @@ server <- function(input, output, session) {
   
   output$glm_pre <- renderPrint({
     df <- filter_data("pre")
-    ss <- make_shot_summary(df,
-                            season = input$season_pre,
-                            player = input$player_pre)
+    if (nrow(df) == 0) return(NULL)
     
+    ss <- make_shot_summary(df, season = input$season_pre, player = input$player_pre)
     if (nrow(ss) < 2) {
       cat("Not enough locations to fit regression.")
       return(NULL)
@@ -277,9 +349,8 @@ server <- function(input, output, session) {
     if (nrow(df) == 0) return(NULL)
     
     if (input$plot_type_post == "eff") {
-      ss <- make_shot_summary(df,
-                              season = input$season_post,
-                              player = input$player_post)
+      ss <- make_shot_summary(df, season = input$season_post, player = input$player_post)
+      
       plot_shot_map(
         ss,
         paste0("Shrunk FG% (μ=", round(unique(ss$prior_mu), 3),
@@ -328,10 +399,9 @@ server <- function(input, output, session) {
   
   output$glm_post <- renderPrint({
     df <- filter_data("post")
-    ss <- make_shot_summary(df,
-                            season = input$season_post,
-                            player = input$player_post)
+    if (nrow(df) == 0) return(NULL)
     
+    ss <- make_shot_summary(df, season = input$season_post, player = input$player_post)
     if (nrow(ss) < 2) {
       cat("Not enough locations to fit regression.")
       return(NULL)
