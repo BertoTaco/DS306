@@ -6,9 +6,9 @@ library(ggplot2)
 ## 0. Load data
 ## ---------------------------------------------------------------
 
-shots_all <- readRDS("data/shots_all.rds")
-shots_made        <- readRDS("data/shots_made.rds")
-shots_missed      <- readRDS("data/shots_missed.rds")
+shots_all    <- readRDS("data/shots_all.rds")
+shots_made   <- readRDS("data/shots_made.rds")
+shots_missed <- readRDS("data/shots_missed.rds")
 
 pre_seasons  <- c("2017-18", "2018-19")
 post_seasons <- setdiff(sort(unique(shots_all$season)), pre_seasons)
@@ -52,6 +52,7 @@ infer_free_throw_flag <- function(df) {
 
 infer_three_pt_flag <- function(df) {
   if (!("three_pt" %in% names(df))) return(rep(NA, nrow(df)))
+  
   tp <- df$three_pt
   if (is.character(tp)) tp <- toupper(tp) == "TRUE"
   if (is.numeric(tp))   tp <- tp == 1
@@ -71,7 +72,7 @@ make_shot_summary <- function(data,
   # K rule: if player selected => K=5 regardless of season
   K <- if (player_on) 5 else if (season_on) 20 else 35
   
-  # Season-relative prior: relative to CURRENT FILTERED SUBSET
+  # Season-relative prior (relative to CURRENT FILTERED SUBSET)
   mu <- mean(data$shot_outcome == "made")
   alpha <- mu * K
   beta  <- (1 - mu) * K
@@ -110,7 +111,7 @@ plot_shot_map <- function(summary_df, title) {
 }
 
 ## ---------------------------------------------------------------
-## NEW: Choice helper that respects ERA + optional season + optional team
+## NEW: Choice helper restricted by era + optional season + optional team
 ## ---------------------------------------------------------------
 
 get_choices <- function(era = c("pre","post"),
@@ -120,20 +121,24 @@ get_choices <- function(era = c("pre","post"),
   
   era_seasons <- if (era == "pre") pre_seasons else post_seasons
   
-  df <- shots_all %>% filter(.data$season %in% era_seasons)
+  df <- shots_all %>% dplyr::filter(.data$season %in% era_seasons)
   
   if (!is.null(season_choice) && season_choice != "All seasons") {
-    df <- df %>% filter(.data$season == season_choice)
+    df <- df %>% dplyr::filter(.data$season == season_choice)
   }
   
   if (!is.null(team_choice) && team_choice != "All teams") {
-    df <- df %>% filter(.data$shot_team == team_choice)
+    df <- df %>% dplyr::filter(.data$shot_team == team_choice)
   }
   
   list(
     teams   = sort(unique(df$shot_team)),
     players = sort(unique(df$shooter))
   )
+}
+
+should_load_players <- function(season_choice, team_choice) {
+  (season_choice != "All seasons") || (team_choice != "All teams")
 }
 
 ## ---------------------------------------------------------------
@@ -152,15 +157,15 @@ ui <- fluidPage(
           selectInput("season_pre", "Season:",
                       choices = c("All seasons", pre_seasons),
                       selected = "All seasons"),
+          
           selectInput("team_pre", "Team:",
                       choices = c("All teams", all_teams),
                       selected = "All teams"),
           
-          # ✅ CHANGE: choices = NULL so it is truly server-side
+          # IMPORTANT: start small; populate dynamically
           selectizeInput("player_pre", "Player:",
-                         choices = NULL,
-                         selected = "All players",
-                         options = list(placeholder = "Type a player name...")),
+                         choices = c("All players"),
+                         selected = "All players"),
           
           selectInput("ft_pre", "Free throws:",
                       choices = c("All shots" = "all",
@@ -179,6 +184,7 @@ ui <- fluidPage(
                                    "Makes only" = "made",
                                    "Misses only" = "missed"),
                        selected = "all"),
+          
           radioButtons("plot_type_pre", "Plot type:",
                        choices = c("Points" = "points",
                                    "Density heatmap" = "heatmap",
@@ -204,15 +210,15 @@ ui <- fluidPage(
           selectInput("season_post", "Season:",
                       choices = c("All seasons", post_seasons),
                       selected = "All seasons"),
+          
           selectInput("team_post", "Team:",
                       choices = c("All teams", all_teams),
                       selected = "All teams"),
           
-          # ✅ CHANGE: choices = NULL so it is truly server-side
+          # IMPORTANT: start small; populate dynamically
           selectizeInput("player_post", "Player:",
-                         choices = NULL,
-                         selected = "All players",
-                         options = list(placeholder = "Type a player name...")),
+                         choices = c("All players"),
+                         selected = "All players"),
           
           selectInput("ft_post", "Free throws:",
                       choices = c("All shots" = "all",
@@ -231,6 +237,7 @@ ui <- fluidPage(
                                    "Makes only" = "made",
                                    "Misses only" = "missed"),
                        selected = "all"),
+          
           radioButtons("plot_type_post", "Plot type:",
                        choices = c("Points" = "points",
                                    "Density heatmap" = "heatmap",
@@ -258,88 +265,72 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   
   ## -----------------------------------------------------------
-  ## ✅ NEW: initialize both player selectizes server-side ONCE
-  ## (prevents the big client-side choices load + removes warning)
-  ## -----------------------------------------------------------
-  observeEvent(TRUE, {
-    ch_pre  <- get_choices("pre",  season_choice = input$season_pre,  team_choice = input$team_pre)
-    ch_post <- get_choices("post", season_choice = input$season_post, team_choice = input$team_post)
-    
-    updateSelectizeInput(session, "player_pre",
-                         choices  = c("All players", ch_pre$players),
-                         selected = "All players",
-                         server   = TRUE)
-    
-    updateSelectizeInput(session, "player_post",
-                         choices  = c("All players", ch_post$players),
-                         selected = "All players",
-                         server   = TRUE)
-  }, once = TRUE)
-  
-  ## -----------------------------------------------------------
-  ## Dynamic dropdown updates
-  ##  - season affects teams + players
-  ##  - team affects players
+  ## Dynamic dropdown updates:
+  ##  - Always update teams based on (era + season)
+  ##  - Only generate players when season or team is selected
+  ##  - If team is selected, restrict players to that team
   ## -----------------------------------------------------------
   
-  observeEvent(input$season_pre, {
-    ch <- get_choices("pre", season_choice = input$season_pre, team_choice = "All teams")
+  observeEvent(list(input$season_pre, input$team_pre), {
+    # Update teams based on season within the PRE era
+    ch_season <- get_choices("pre", season_choice = input$season_pre, team_choice = "All teams")
     
     updateSelectInput(
       session, "team_pre",
-      choices = c("All teams", ch$teams),
-      selected = "All teams"
+      choices  = c("All teams", ch_season$teams),
+      selected = if (input$team_pre %in% c("All teams", ch_season$teams)) input$team_pre else "All teams"
     )
     
-    updateSelectizeInput(
-      session, "player_pre",
-      choices = c("All players", ch$players),
-      selected = "All players",
-      server = TRUE
-    )
+    if (!should_load_players(input$season_pre, input$team_pre)) {
+      updateSelectizeInput(
+        session, "player_pre",
+        choices  = c("All players"),
+        selected = "All players",
+        server   = TRUE
+      )
+    } else {
+      ch <- get_choices("pre", season_choice = input$season_pre, team_choice = input$team_pre)
+      
+      updateSelectizeInput(
+        session, "player_pre",
+        choices  = c("All players", ch$players),
+        selected = if (input$player_pre %in% c("All players", ch$players)) input$player_pre else "All players",
+        server   = TRUE
+      )
+    }
   }, ignoreInit = FALSE)
   
-  observeEvent(input$team_pre, {
-    ch <- get_choices("pre", season_choice = input$season_pre, team_choice = input$team_pre)
-    
-    updateSelectizeInput(
-      session, "player_pre",
-      choices = c("All players", ch$players),
-      selected = if (input$player_pre %in% c("All players", ch$players)) input$player_pre else "All players",
-      server = TRUE
-    )
-  }, ignoreInit = TRUE)
-  
-  observeEvent(input$season_post, {
-    ch <- get_choices("post", season_choice = input$season_post, team_choice = "All teams")
+  observeEvent(list(input$season_post, input$team_post), {
+    # Update teams based on season within the POST era
+    ch_season <- get_choices("post", season_choice = input$season_post, team_choice = "All teams")
     
     updateSelectInput(
       session, "team_post",
-      choices = c("All teams", ch$teams),
-      selected = "All teams"
+      choices  = c("All teams", ch_season$teams),
+      selected = if (input$team_post %in% c("All teams", ch_season$teams)) input$team_post else "All teams"
     )
     
-    updateSelectizeInput(
-      session, "player_post",
-      choices = c("All players", ch$players),
-      selected = "All players",
-      server = TRUE
-    )
+    if (!should_load_players(input$season_post, input$team_post)) {
+      updateSelectizeInput(
+        session, "player_post",
+        choices  = c("All players"),
+        selected = "All players",
+        server   = TRUE
+      )
+    } else {
+      ch <- get_choices("post", season_choice = input$season_post, team_choice = input$team_post)
+      
+      updateSelectizeInput(
+        session, "player_post",
+        choices  = c("All players", ch$players),
+        selected = if (input$player_post %in% c("All players", ch$players)) input$player_post else "All players",
+        server   = TRUE
+      )
+    }
   }, ignoreInit = FALSE)
   
-  observeEvent(input$team_post, {
-    ch <- get_choices("post", season_choice = input$season_post, team_choice = input$team_post)
-    
-    updateSelectizeInput(
-      session, "player_post",
-      choices = c("All players", ch$players),
-      selected = if (input$player_post %in% c("All players", ch$players)) input$player_post else "All players",
-      server = TRUE
-    )
-  }, ignoreInit = TRUE)
-  
   ## -----------------------------------------------------------
-  ## Filtering logic (IMPORTANT: "All seasons" means all ERA seasons)
+  ## Filtering logic
   ## -----------------------------------------------------------
   
   filter_data <- function(era) {
@@ -352,7 +343,6 @@ server <- function(input, output, session) {
       tp_choice     <- input$tp_pre
       base          <- pick_dataset(input$shot_result_pre)
       era_seasons   <- pre_seasons
-      
     } else {
       season_choice <- input$season_post
       team_choice   <- input$team_post
@@ -365,13 +355,17 @@ server <- function(input, output, session) {
     
     df <- base
     
+    # Always restrict to the current era
     df <- df %>% filter(.data$season %in% era_seasons)
     
+    # Optional season filter
     if (season_choice != "All seasons") df <- df %>% filter(.data$season == season_choice)
     
+    # Team/player
     if (team_choice   != "All teams")   df <- df %>% filter(.data$shot_team == team_choice)
     if (player_choice != "All players") df <- df %>% filter(.data$shooter == player_choice)
     
+    # 3PT filter
     tp_flag <- infer_three_pt_flag(df)
     if (tp_choice == "tp_only") {
       df <- df %>% filter(tp_flag %in% TRUE)
@@ -379,6 +373,7 @@ server <- function(input, output, session) {
       df <- df %>% filter(tp_flag %in% FALSE)
     }
     
+    # Free throw filter
     ft_flag <- infer_free_throw_flag(df)
     if (ft_choice == "ft_only") {
       df <- df %>% filter(ft_flag %in% TRUE)
