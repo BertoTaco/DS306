@@ -6,9 +6,9 @@ library(ggplot2)
 ## 0. Load data
 ## ---------------------------------------------------------------
 
-shots_all    <- readRDS("data/shots_all.rds")
-shots_made   <- readRDS("data/shots_made.rds")
-shots_missed <- readRDS("data/shots_missed.rds")
+shots_all <- readRDS("data/shots_all.rds")
+shots_made        <- readRDS("data/shots_made.rds")
+shots_missed      <- readRDS("data/shots_missed.rds")
 
 pre_seasons  <- c("2017-18", "2018-19")
 post_seasons <- setdiff(sort(unique(shots_all$season)), pre_seasons)
@@ -118,17 +118,14 @@ get_choices <- function(era = c("pre","post"),
                         team_choice = "All teams") {
   era <- match.arg(era)
   
-  # First restrict to the ERA seasons when "All seasons" is selected
   era_seasons <- if (era == "pre") pre_seasons else post_seasons
   
   df <- shots_all %>% filter(.data$season %in% era_seasons)
   
-  # Optional: season restriction
   if (!is.null(season_choice) && season_choice != "All seasons") {
     df <- df %>% filter(.data$season == season_choice)
   }
   
-  # Optional: team restriction (for player dropdown)
   if (!is.null(team_choice) && team_choice != "All teams") {
     df <- df %>% filter(.data$shot_team == team_choice)
   }
@@ -158,9 +155,12 @@ ui <- fluidPage(
           selectInput("team_pre", "Team:",
                       choices = c("All teams", all_teams),
                       selected = "All teams"),
+          
+          # ✅ CHANGE: choices = NULL so it is truly server-side
           selectizeInput("player_pre", "Player:",
-                         choices = c("All players", all_players),
-                         selected = "All players"),
+                         choices = NULL,
+                         selected = "All players",
+                         options = list(placeholder = "Type a player name...")),
           
           selectInput("ft_pre", "Free throws:",
                       choices = c("All shots" = "all",
@@ -207,9 +207,12 @@ ui <- fluidPage(
           selectInput("team_post", "Team:",
                       choices = c("All teams", all_teams),
                       selected = "All teams"),
+          
+          # ✅ CHANGE: choices = NULL so it is truly server-side
           selectizeInput("player_post", "Player:",
-                         choices = c("All players", all_players),
-                         selected = "All players"),
+                         choices = NULL,
+                         selected = "All players",
+                         options = list(placeholder = "Type a player name...")),
           
           selectInput("ft_post", "Free throws:",
                       choices = c("All shots" = "all",
@@ -253,6 +256,25 @@ ui <- fluidPage(
 ## ---------------------------------------------------------------
 
 server <- function(input, output, session) {
+  
+  ## -----------------------------------------------------------
+  ## ✅ NEW: initialize both player selectizes server-side ONCE
+  ## (prevents the big client-side choices load + removes warning)
+  ## -----------------------------------------------------------
+  observeEvent(TRUE, {
+    ch_pre  <- get_choices("pre",  season_choice = input$season_pre,  team_choice = input$team_pre)
+    ch_post <- get_choices("post", season_choice = input$season_post, team_choice = input$team_post)
+    
+    updateSelectizeInput(session, "player_pre",
+                         choices  = c("All players", ch_pre$players),
+                         selected = "All players",
+                         server   = TRUE)
+    
+    updateSelectizeInput(session, "player_post",
+                         choices  = c("All players", ch_post$players),
+                         selected = "All players",
+                         server   = TRUE)
+  }, once = TRUE)
   
   ## -----------------------------------------------------------
   ## Dynamic dropdown updates
@@ -329,9 +351,7 @@ server <- function(input, output, session) {
       ft_choice     <- input$ft_pre
       tp_choice     <- input$tp_pre
       base          <- pick_dataset(input$shot_result_pre)
-      
-      # "All seasons" = all pre seasons
-      era_seasons <- pre_seasons
+      era_seasons   <- pre_seasons
       
     } else {
       season_choice <- input$season_post
@@ -340,24 +360,18 @@ server <- function(input, output, session) {
       ft_choice     <- input$ft_post
       tp_choice     <- input$tp_post
       base          <- pick_dataset(input$shot_result_post)
-      
-      # "All seasons" = all post seasons
-      era_seasons <- post_seasons
+      era_seasons   <- post_seasons
     }
     
     df <- base
     
-    # Always restrict to the current tab's era when season is "All seasons"
     df <- df %>% filter(.data$season %in% era_seasons)
     
-    # Optional season filter
     if (season_choice != "All seasons") df <- df %>% filter(.data$season == season_choice)
     
-    # Team + player filters
     if (team_choice   != "All teams")   df <- df %>% filter(.data$shot_team == team_choice)
     if (player_choice != "All players") df <- df %>% filter(.data$shooter == player_choice)
     
-    # 3PT filter
     tp_flag <- infer_three_pt_flag(df)
     if (tp_choice == "tp_only") {
       df <- df %>% filter(tp_flag %in% TRUE)
@@ -365,7 +379,6 @@ server <- function(input, output, session) {
       df <- df %>% filter(tp_flag %in% FALSE)
     }
     
-    # Free throw filter
     ft_flag <- infer_free_throw_flag(df)
     if (ft_choice == "ft_only") {
       df <- df %>% filter(ft_flag %in% TRUE)
